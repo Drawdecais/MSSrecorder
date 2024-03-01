@@ -1,33 +1,38 @@
-#https://github.com/Drawdecais/MSSrecorder/blob/main/MSSrecorder.py
-import cv2, mss, numpy, pyautogui, keyboard, time, subprocess
-
-fps = 60
-images = [] #Array para ingresar las imágenes
-size = pyautogui.size() #obtener tamaño del monitor
-formato = cv2.VideoWriter_fourcc(*"x264") #formato del vídeo
-
-#video donde se ingresaran las imágenes
-video = cv2.VideoWriter('video.mp4', formato, fps, (size.width, size.height))
-
-with mss.mss() as sct:
-	#top y left indican la posición donde capturará, width y height el tamaño del capture
-	monitor = {"top":0, "left":0, "width": size.width, "height": size.height}
-	tiempo = time.time() #Tiempo inicio la grabación
-	while True: #inicia un bucle infinito
-		cap = sct.grab(monitor) #capture de mss
-		img = numpy.array(cap) #convertir en array
-		images.append(img) #ingresar en el array
-		if keyboard.is_pressed('q'):break #terminar bucle al precionar 'q'
-
-#imprimir el tiempo que duró grabando, este sera el tiempo que debe tener el video final
-print("Loanding...","time:",time.localtime(round((time.time()-tiempo),2)).tm_sec)
-#convertir todas las imágenes en video
-for image in images:video.write(image)
-video.release()
-"""Este bucle es porque por alguna razon la primera vez que ffmpeg
-abre el video da error y la segunda vez si funciona"""
-for i in range(3):
-	#setpts=2*PTS relentiza en video manteniendo los 60fps
-	if subprocess.run(f'ffmpeg -loglevel error -stats -i video.mp4 \
-		-filter:v "setpts={fps/28}*PTS" -c:v libx264 -crf 21 -preset slow video2.mp4 -y',
-		 shell=True, capture_output=False).returncode == 0:break
+import cv2, mss, numpy, pyautogui, keyboard, time, subprocess, soundcard as sc, soundfile as sf, threading
+from moviepy.editor import VideoFileClip, AudioFileClip
+class runGrabar():
+	def __init__(self,nombre_video,nombre_audio,video_end,fps):
+		speakers = sc.all_speakers();self.Grabar=True
+		if len(speakers) == 1:speaker = sc.default_speaker().name
+		else:
+			for i, speaker in enumerate(speakers):print(i, speaker.name)
+			x = int(input('Enter device:'));speaker = str(speakers[x].id)
+		self.sem = threading.Semaphore(2)
+		A = threading.Thread(target=self.GrabarAudio,args=(nombre_audio,speaker,));A.start()
+		V = threading.Thread(target=self.GrabarVideo,args=(nombre_video,fps,));V.start()
+		while self.Grabar:
+			if keyboard.is_pressed('0'):self.Grabar = False;A.join();V.join()
+		self.ffmpeg(nombre_video,nombre_audio,video_end)
+	def GrabarAudio(self,nombre_audio,speaker):
+		with sc.get_microphone(id=speaker,include_loopback=True).recorder(samplerate=44100) as mic:
+			with sf.SoundFile(nombre_audio, mode='w', samplerate=44100, channels=2, subtype='PCM_16') as audio:
+				self.sem.acquire()
+				while self.Grabar:audio.write(mic.record(numframes=44100))
+				self.sem.release()
+	def GrabarVideo(self,nombre_video,fps):
+		size = pyautogui.size()
+		with mss.mss() as sct:
+			video = cv2.VideoWriter(nombre_video, cv2.VideoWriter_fourcc(*'x264'), fps, (size.width,size.height))
+			monitor = {"top":0,"left":0,"width":size.width,"height":size.height}
+			self.sem.acquire();tiempo=time.time()
+			while self.Grabar:video.write(numpy.array(sct.grab(monitor)))
+			self.sem.release();video.release();self.time_end=time.time()-tiempo
+	def ffmpeg(self,nombre_video,nombre_audio,video_end):
+		video_time = VideoFileClip(nombre_video).duration
+		pts = max(self.time_end,video_time) / min(self.time_end,video_time)
+		subprocess.run(f'ffmpeg -loglevel error -stats -i {nombre_video} -i {nombre_audio} \
+			-map 0:v -map 1:a -filter:v "setpts={pts}*PTS" -c:v libx264 -crf 21 -preset veryfast -60\
+			{video_end} -y', shell=True)
+		print("time_end",self.time_end,"video_time:",video_time)
+		print("PTS",round(pts,2),"  time_end:",time.localtime(self.time_end).tm_min,":",time.localtime(self.time_end).tm_sec)
+runGrabar('video.mp4','audio.flac','video-end.mp4',30)
